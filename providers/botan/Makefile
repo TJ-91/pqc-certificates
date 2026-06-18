@@ -22,7 +22,7 @@ VERIFY_LOGPATH := $(CURR_PATH)/logs
 VERIFY_LOG = "$(VERIFY_LOGPATH)/$(PROVIDER_NAME)-$@_verify_log.txt"
 
 ARTIFACTS="$@/default/artifacts"
-MATRIX_PATH="$(CURR_PATH)/comptMatrices/$@_$(PROVIDER_NAME).csv"
+MATRIX_PATH="$(CURR_PATH)/compatMatrices/$@_$(PROVIDER_NAME).csv"
 
 PROVIDERS := bc botan carlredhound coreydigicert cryptonext entrust kris openca oqsgnutls oqsopenssl111 oqsprovider
 
@@ -71,7 +71,7 @@ requirements/generate:
 # Verification Requirements
 requirements/verify:
 	@[ -d logs ] || mkdir -p "logs"
-	@[ -d comptMatrices ] || mkdir -p "comptMatrices"
+	@[ -d compatMatrices ] || mkdir -p "compatMatrices"
 	@echo && echo "[ $(PROVIDER_NAME) ] Checking Requirements (Verify):"
 	@echo "[ $(PROVIDER_NAME) ] Done (Ok)"
 	
@@ -118,11 +118,6 @@ verify: requirements/verify botan
 # script but it uses the base directory of a different
 # provider to make use of another provider's artifacts
 
-TA_PATH="$$i/ta"
-CA_PATH="$$i/ca"
-EE_PATH="$$i/ee"
-	
-
 $(PROVIDERS): requirements/verify 
 	@echo && echo "[ $(PROVIDER_NAME) ] Verifying Artifacts of $@:"
 	@echo $(shell date --iso=seconds) > $(VERIFY_LOG)
@@ -132,28 +127,27 @@ $(PROVIDERS): requirements/verify
 	@echo "CURR DIR: $(PWD) " >> $(VERIFY_LOG)
 	@echo >> $(VERIFY_LOG)
 	@echo '"key_algorithm_oid","ta","ca","ee","crl_ta","crl_ca"' > $(MATRIX_PATH)
-	@# result=`$(VERIFY_SCRIPT) "../$(ARTIFACTS)" >> $(VERIFY_LOG) 2>&1 `
-	@for i in ../$(ARTIFACTS)/*/ ; do \
+
+	@for i in ../$(ARTIFACTS)/ ; do \
+		oid=$$(basename $$i) ; \
 		echo $$i >> $(VERIFY_LOG) ; \
-		if [ -f $(TA_PATH)/ta.pem ] ; then \
-			cert_format="pem" ; \
+		cert_format="pem" ; \
+		ta_file="$$i$${oid}_ta.$$cert_format" ; \
+		ca_file="$$i$${oid}_ca.$$cert_format" ; \
+		if [ -f $$i$${oid}_ee.$$cert_format ] ; then \
+			ee_file="$$i$${oid}_ee" ; \
 		else \
-			cert_format="der" ; \
+			ee_file="$$i$${oid}_cert" ; \
 		fi ; \
-		if [ -f $(EE_PATH)/ee.$$cert_format ] ; then \
-			ee_file="ee" ; \
-		else \
-			ee_file="cert" ; \
-		fi ; \
-		botan cert_verify $(EE_PATH)/$$ee_file.$$cert_format $(CA_PATH)/ca.$$cert_format $(TA_PATH)/ta.$$cert_format >> $(VERIFY_LOG) 2>&1 ; \
+		botan cert_verify $$ee_file.$$cert_format $$ca_file $$ta_file >> $(VERIFY_LOG) 2>&1 ; \
 		result=$$? ; \
 		[ $$result -eq 0 ] && x='"Y"' || x='"N"' ; \
-		oid=$$(basename $$i) ; \
 		echo '"'$$oid'"',$$x,$$x,$$x,'""','""' ; \
 		echo '"'$$oid'"',$$x,$$x,$$x,'""','""' >> $(MATRIX_PATH) ; \
 		echo $$result >> $(VERIFY_LOG) ; \
 		echo >> $(VERIFY_LOG) ; \
 	done
+
 	@echo "[ $(PROVIDER_NAME) ] Done (Ok)." && echo
 	 
 cross-verify: $(PROVIDERS)
@@ -166,4 +160,4 @@ clean:
 	 done
 
 distclean: clean
-	@rm -rf logs comptMatrices
+	@rm -rf logs compatMatrices

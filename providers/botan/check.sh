@@ -1,169 +1,121 @@
-#!/bin/bash
+#! /usr/bin/env bash
 
-function check_dir() {
+warn() { printf "$@" >&2; }
+die() { warn "$@"; exit 1; }
+if [[ $# != 1 ]]; then die 'Usage: %s <zipfile>\n' "$0"; fi
+xxd -p </dev/null || die 'Missing xxd command\n'
 
-	# We want to check that the needed structures
-	# are all in place
-	DIR=$1
+# case $(openssl version -v) in
+# "OpenSSL 3".[56].*) : ;;
+# *) die 'Unsupported OpenSSL version\n';;
+# esac
 
-	# Checks if we have the PEM version of the RootCA
-	if ! [ -f "$DIR/ta/ta.pem" ]; then
+set -o pipefail
+shopt -s nullglob
 
-		# Special handling for the Entrust artifacts
-		if [ `echo $1 | grep 'entrust'` ] ; then
-			mv "$DIR/ta/ta.der" "$DIR/ta/ta.pem"
-			openssl x509 -in "$DIR/ta/ta.pem" -out "$DIR/ta/ta.der" -outform DER
-		fi
+tmp=$(mktemp -t -d)
+# trap 'e=$?; rm -rf ${tmp}; exit $e' EXIT HUP INT TERM
+unzip -qq -j -d "$tmp" "$1" || die 'Error unzipping %s\n' "$1"
 
-		# Checks for the RootCA in DER format
-		if ! [ -f "$DIR/ta/ta.der" ] ; then
-			echo
-			echo "ERROR: missing $DIR/ta/ta.der file ... "
-			echo
-			exit 1;
-		fi
+ptext="${tmp}/plaintext"
+printf "Attack at dawn\n" > "$ptext"
 
-		# Providing the PEM version of the RootCA
-		echo "Converting $DIR/ta/ta.der to $DIR/ta/ta.pem ... "
-		openssl x509 -inform DER -in "$DIR/ta/ta.der" -out "$DIR/ta/ta.pem"
-		if [ $? -gt 0 ] ; then
-			echo
-			echo "ERROR: Cannot convert $DIR/ta/ta.der into PEM format"
-			echo
-			exit 1
-		fi
-	fi
+check_keys() {
+    local oid=$1
+    local -a pubs
+    if [[ $# -lt 2 ]]; then warn 'Usage: check_keys <oid> <form> ...\n'; return 1; fi
+    shift
 
-	# Checks if we have the PEM version of the
-	# Intermediate CA
-	if ! [ -f "$DIR/ca/ca.pem" ]; then
+    for form in "$@"
+    do
+        case $form in
+        priv|ee|ta) set -- "$tmp"/*-"${oid}_${form}.der";;
+        ss|ciphertext) set -- "$tmp"/*-"${oid}_${form}.bin";;
+        pubs) set -- pubs;;
+        *) set -- "$tmp"/*-"${oid}_${form}_priv.der";;
+        esac
+        if [[ $# -eq 0 ]]; then continue; fi
+        if [[ $# -ne 1 ]]; then
+            warn 'Too many inputs match %s for %s\n' \
+                "$form" "${oid}"
+            continue
+        fi
+        obj=$1
+        pubout="$tmp/${oid}_${form}_pub.der"
+        /bin/rm -f "$pubout"
+        case $form in
+        ss) ss_file=$obj;;
+        ciphertext) ct_file=$obj;;
+        pubs)
+            if [[ "${#pubs[@]}" -gt 1 ]]; then
+                uniq=$(for dgst in "${pubs[@]}"; do printf "%s\n" "$dgst"; done | sort -u | wc -l) &&
+                [[ $uniq -eq 1 ]] &&
+                printf "%s,%s,%s\n" "${oid}" "consistent" "Y" ||
+                printf "%s,%s,%s\n" "${oid}" "consistent" "N"
+            fi;;
+        ta) botan cert_verify "$obj" "$obj" >/dev/null &&
+            ta_file="$obj" &&
+            # dgst=$(openssl dgst -sha256 -binary < "$pubout" | xxd -p -c32) &&
+            # pubs=("${pubs[@]}" "$dgst") &&
+            printf "%s,%s,%s\n" "${oid}" "cert" "Y" ||
+            printf "%s,%s,%s\n" "${oid}" "cert" "N";;
+        ee) botan cert_verify "$obj" "$ta_file" >/dev/null
+            # dgst=$(openssl dgst -sha256 -binary < "$pubout" | xxd -p -c32) &&
+            # pubs=("${pubs[@]}" "$dgst") &&
+            printf "%s,%s,%s\n" "${oid}" "cert" "Y" ||
+            printf "%s,%s,%s\n" "${oid}" "cert" "N";;
+        # *)  openssl pkey -inform DER -in "$obj" -pubout -outform DER -out "$pubout" &&
+        *)  
+            if [[ -n "$sigfile" ]]; then
+                # openssl pkeyutl -sign -rawin -keyform DER -inkey "$obj" -in "$ptext" -out "$sigfile" &&
+                # openssl pkeyutl -verify -rawin -in "$ptext" -keyform DER -pubin -inkey "$pubout" \
+                #     -sigfile "$sigfile" >/dev/null
 
-		# Special trick for Entrust's artifacts
-		if [ `echo $1 | grep 'entrust'` ] ; then
-			mv "$DIR/ca/ca.der" "$DIR/ca/ca.pem"
-			openssl x509 -in "$DIR/ca/ca.pem" -out "$DIR/ca/ca.der" -outform DER
-		fi
-
-		# Checks for the RootCA in DER format
-		if ! [ -f "$DIR/ca/ca.der" ] ; then
-			echo
-			echo "ERROR: missing $DIR/ca/ca.der file ... "
-			echo
-			exit 1;
-		fi
-
-		# Converts the DER into PEM
-		openssl x509 -inform DER -in "$DIR/ca/ca.der" -out "$DIR/ca/ca.pem"
-		if [ $? -gt 0 ] ; then
-			echo
-			echo "ERROR: Cannot convert $DIR/ca/ca.der into PEM format"
-			echo
-			exit 1
-		fi
-	fi
+				# botan sign "$obj" "$obj" >/dev/null
+				echo "todo"
+				false
+            elif [[ -n "$ct_file" && -n "$ss_file" ]]; then
+                # cmp -s "$ss_file" <(
+                #     openssl pkeyutl -decap -inkey "$obj" -in "$ct_file" -secret /dev/stdout)
+				echo "todo"
+				false
+            fi && 
+			false && # otherwise returns true for now, TODO remove
+            # dgst=$(openssl dgst -sha256 -binary < "$pubout" | xxd -p -c32) &&
+            # pubs=("${pubs[@]}" "$dgst") &&
+            printf "%s,%s,%s\n" "${oid}" "$form" "Y" ||
+            printf "%s,%s,%s\n" "${oid}" "$form" "N"
+            ;;
+        esac
+    done
 }
 
-# The check() function expects the following input:
-# $1 ....: Directory for the specific OID
-function check() {
+mldsa_oids=(2.16.840.1.101.3.4.3.{17,18,19})
+# mlkem_oids=(2.16.840.1.101.3.4.4.{1,2,3})
+# slh2s_oids=(2.16.840.1.101.3.4.3.{20,22,24})
+# slh2f_oids=(2.16.840.1.101.3.4.3.{21,23,25})
+# slh3s_oids=(2.16.840.1.101.3.4.3.{26,28,30})
+# slh3f_oids=(2.16.840.1.101.3.4.3.{27,29,31})
+while [[ ${#mldsa_oids[@]} -gt 0 ]]
+do
+    # ta_file=
+    # ss_file=
+    # ct_file=
+    # sigfile="${tmp}/sig.dat"
 
-	# Here you can use the data from
-	# the ZIP structure
-	#
-	# <ALG_OID>
-	#     |
-	#     +--> ./ta (RootCA)
-	#           |
-	#           +--> ./ta.der (Cert)
-	#           |
-	#           +--> ./ta_priv.der (KeyPair)
-	#     +--> ./ca (IntermediateCA)
-	#           |
-	#           +--> ./ca.der (Cert)
-	#           |
-	#           +--> ./ca_priv.der (KeyPair)
-	#     +--> ./ee (End Entity)
-	#           |
-	#           +--> ./ca.der (Cert)
-	#           |
-	#           +--> ./ca_priv.der (KeyPair)
-	#     +--> ./crl (Rev. Lists)
-	#           |
-	#           +--> ./ca.der (Cert)
-	#           |
-	#           +--> ./ca_priv.der (KeyPair)
-	#     +--> ./ocsp (Online Status)
-	#           |
-	#           +--> ./ocsp_ca.der (ICA's OCSP)
-	#           |
-	#           +--> ./ocsp_cert.der (EE's OCSP)
+    # for oid in "${slh2f_oids[0]}" "${slh2s_oids[0]}" \
+    #            "${slh3f_oids[0]}" "${slh3s_oids[0]}"
+    # do check_keys "$oid" priv ta pubs; done
 
-	# Extracts the argument
-	DIR=$1
+    # # Must run just before ML-KEM to set correct ta_file
+    check_keys "${mldsa_oids[0]}" seed expandedkey both ta pubs
+    # sigfile=
+    # check_keys "${mlkem_oids[0]}" ss ciphertext seed expandedkey both ee pubs
 
-	# Change directory
-	if ! [ -d "$DIR" ] ; then
-		echo "ERROR: missing dir $DIR"
-		exit 1;
-	fi
-
-	# Change Directory
-	cd "$DIR"
-
-	# Perform some actions
-	
-	# uncomment next line for debugging (logging)
-	#exec 2>&1
-	
-	# check certificate chain
-	if [ -f "ta/ta.der" ] ; then
-		cert_format="der"
-	elif [ -f "ta/ta.pem" ] ; then
-		cert_format="pem"
-	else
-		echo "Missing TA or unknown format."
-		cd ..
-		return
-	fi
-	
-	if [ -f "ee/ee."$cert_format ] ; then
-		cert_ee="ee"
-	elif [ -f "ee/cert."$cert_format ] ; then
-		cert_ee="cert"
-	else
-		echo "Missing EE or unknown format."
-		cd ..
-		return
-	fi
-	
-	result=$(botan cert_verify ee/$cert_ee.$cert_format ca/ca.$cert_format ta/ta.$cert_format)
-	
-	# Returns
-	cd ..
-	
-	echo $result
-}
-
-# List of Sub Directories
-SUBDIRS="default/artifacts"
-
-# Checks for the input
-if ! [ "x$1" = "x" ] ; then
-	SUBDIRS=$1
-fi
-
-# Checks each directory 
-for oid_folder in ${SUBDIRS}/*; do
-
-	# Extracts the target
-	target=${oid_folder##$SUBDIRS/};
-	dir=${oid_folder%%$target}
-
-	# Executing the Check Script
-	if [ -d "${dir}" ] ; then
-		result=$(cd "${dir}" && echo "${oid_folder}:" \
-			&& check_dir "${target}" && check "${target}" )
-		echo "$result" && echo
-	fi
-
+    unset "mldsa_oids[0]"; mldsa_oids=("${mldsa_oids[@]}")
+    # unset "mlkem_oids[0]"; mlkem_oids=("${mlkem_oids[@]}")
+    # unset "slh2f_oids[0]"; slh2f_oids=("${slh2f_oids[@]}")
+    # unset "slh2s_oids[0]"; slh2s_oids=("${slh2s_oids[@]}")
+    # unset "slh3f_oids[0]"; slh3f_oids=("${slh3f_oids[@]}")
+    # unset "slh3s_oids[0]"; slh3s_oids=("${slh3s_oids[@]}")
 done
